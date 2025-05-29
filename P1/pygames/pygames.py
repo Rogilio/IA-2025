@@ -122,10 +122,10 @@ def algoritmo_a_estrella(dibujar, grid, inicio, fin):
             longitud = reconstruir_camino(came_from, fin, dibujar)
             fin.hacer_fin()
             inicio.hacer_inicio()
-            print(f"✔ Camino encontrado.")
-            print(f"🕒 Tiempo de ejecución: {duracion:.4f} segundos")
-            print(f"🔁 Nodos visitados: {nodos_visitados}")
-            print(f"📏 Longitud del camino: {longitud} nodos")
+            print(f"Camino encontrado.")
+            print(f"Tiempo de ejecución: {duracion:.4f} segundos")
+            print(f"Nodos visitados: {nodos_visitados}")
+            print(f"Longitud del camino: {longitud} nodos")
             return True
 
         for vecino in actual.vecinos:
@@ -147,7 +147,7 @@ def algoritmo_a_estrella(dibujar, grid, inicio, fin):
         if actual != inicio:
             actual.hacer_cerrado()
 
-    print("❌ No se encontró camino.")
+    print("No se encontró camino.")
     return False
 
 def crear_grid(filas, ancho):
@@ -197,31 +197,37 @@ def main(ventana, ancho):
             if event.type == pygame.QUIT:
                 corriendo = False
 
+            # CLIC/ARRASTRE CON BOTÓN IZQUIERDO
             if pygame.mouse.get_pressed()[0]:
-                pos = pygame.mouse.get_pos()
-                fila, col = obtener_click_pos(pos, FILAS, ancho)
-                nodo = grid[fila][col]
-                if not inicio and nodo != fin:
-                    inicio = nodo
-                    inicio.hacer_inicio()
-                elif not fin and nodo != inicio:
-                    fin = nodo
-                    fin.hacer_fin()
-                elif nodo != fin and nodo != inicio:
-                    nodo.hacer_pared()
+                x,y = pygame.mouse.get_pos()
+                # si sale del área, lo ignoramos
+                if 0 <= x < ancho and 0 <= y < ancho:
+                    fila, col = obtener_click_pos((x,y), FILAS, ancho)
+                    nodo = grid[fila][col]
+                    if not inicio and nodo != fin:
+                        inicio = nodo
+                        inicio.hacer_inicio()
+                    elif not fin and nodo != inicio:
+                        fin = nodo
+                        fin.hacer_fin()
+                    elif nodo != fin and nodo != inicio:
+                        nodo.hacer_pared()
 
+    	     # CLIC/ARRASTRE CON BOTÓN DERECHO
             elif pygame.mouse.get_pressed()[2]:
-                pos = pygame.mouse.get_pos()
-                fila, col = obtener_click_pos(pos, FILAS, ancho)
-                nodo = grid[fila][col]
-                nodo.restablecer()
-                if nodo == inicio:
-                    inicio = None
-                elif nodo == fin:
-                    fin = None
-
+                x,y = pygame.mouse.get_pos()
+                if 0 <= x < ancho and 0 <= y < ancho:
+                    fila, col = obtener_click_pos((x,y), FILAS, ancho)
+                    nodo = grid[fila][col]
+                    nodo.restablecer()
+                    if nodo == inicio:
+                        inicio = None
+                    elif nodo == fin:
+                        fin = None
+            # ESPACIO para A*
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_SPACE and inicio and fin:
+                    # actualiza vecinos…
                     for fila in grid:
                         for nodo in fila:
                             nodo.actualizar_vecinos(grid)
