@@ -79,14 +79,16 @@ def reconstruir_camino(came_from, actual, dibujar):
     return longitud
 
 def algoritmo_a_estrella(dibujar, grid, inicio, fin):
+    # --- Preparar estructuras ---
     contador = 0
     open_set = PriorityQueue()
     open_set.put((0, contador, inicio))
+    open_set_hash = {inicio}
+    # nodos ya evaluados
+    closed_set = set()
     came_from = {}
     inicio.g = 0
     inicio.f = heuristica(inicio.get_pos(), fin.get_pos())
-
-    open_set_hash = {inicio}
     nodos_visitados = 0
     t0 = time.time()
 
@@ -94,17 +96,45 @@ def algoritmo_a_estrella(dibujar, grid, inicio, fin):
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT:
                 pygame.quit()
+        # ─── 1) IMPRIMIR listas antes de sacar el siguiente nodo ───
+        abierta = [f"{n.fila},{n.col}" for n in open_set_hash]
+        cerrada = [f"{n.fila},{n.col}" for n in closed_set]
+        print("Lista Abierta:", ", ".join(abierta))
+        print("Lista Cerrada:",  ", ".join(cerrada))
+
+        # ─── 2) Extraer nodo con menor f ───
         actual = open_set.get()[2]
         open_set_hash.remove(actual)
+        closed_set.add(actual)          # marcamos actual como cerrado
 
         if actual == fin:
             dur = time.time() - t0
+            # colorea el camino y devuelve la longitud 
             longitud = reconstruir_camino(came_from, fin, dibujar)
+            # Restaurar colores de inicio/fin
             fin.hacer_fin(); inicio.hacer_inicio()
-            print("✔ Camino encontrado.")
+
+            # Reconstruir lista de nodos en el camino
+            nodo = fin
+            camino = []
+            while nodo in came_from:
+                camino.append(nodo)
+                nodo = came_from[nodo]
+            camino.reverse()
+
+            # Imprimir g, h y f de cada nodo
+            print("\n--- Detalle del camino ---")
+            for n in camino:
+                nombre = f"{n.fila},{n.col}"
+                print(f"Nodo: {nombre}, g: {n.g:.2f}, h: {n.h:.2f}, f: {n.f:.2f}")
+
+            # Costo total = g de la meta
+            print(f"Costo Total del Camino: {fin.g:.2f}\n")
             print(f"Tiempo: {dur:.4f}s  Nodos: {nodos_visitados}  Longitud: {longitud}")
+            print("/////////// CAMINO ENCONTRADO ///////////")
             return True
 
+        # ─── 4) Procesar vecinos ───
         for vecino in actual.vecinos:
             temp_g = actual.g + 1
             if temp_g < vecino.g:
@@ -123,7 +153,7 @@ def algoritmo_a_estrella(dibujar, grid, inicio, fin):
         if actual != inicio:
             actual.hacer_cerrado()
 
-    print("No se encontró camino.")
+    print("/////////// No se encontró camino ///////////")
     return False
 
 def crear_grid(filas, ancho):
