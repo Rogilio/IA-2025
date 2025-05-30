@@ -53,20 +53,60 @@ class Nodo:
     def actualizar_vecinos(self, grid):
         self.vecinos = []
         # abajo, arriba, derecha, izquierda
-        if self.fila < self.total_filas-1 and not grid[self.fila+1][self.col].es_pared():
+        filas = self.total_filas
+
+        # Movimientos ortogonales
+        if self.fila < filas-1 and not grid[self.fila+1][self.col].es_pared():
             self.vecinos.append(grid[self.fila+1][self.col])
-        if self.fila > 0 and not grid[self.fila-1][self.col].es_pared():
+        if self.fila > 0   and not grid[self.fila-1][self.col].es_pared():
             self.vecinos.append(grid[self.fila-1][self.col])
-        if self.col < self.total_filas-1 and not grid[self.fila][self.col+1].es_pared():
+        if self.col < filas-1 and not grid[self.fila][self.col+1].es_pared():
             self.vecinos.append(grid[self.fila][self.col+1])
-        if self.col > 0 and not grid[self.fila][self.col-1].es_pared():
+        if self.col > 0   and not grid[self.fila][self.col-1].es_pared():
             self.vecinos.append(grid[self.fila][self.col-1])
 
-    def __lt__(self, otro): return False
+        # Movimientos diagonales (coste 14), sin “corner cutting”
+        # Abajo-derecha
+        if (self.fila < filas-1 and self.col < filas-1):
+            n1 = grid[self.fila+1][self.col]
+            n2 = grid[self.fila][self.col+1]
+            diag = grid[self.fila+1][self.col+1]
+            if not (n1.es_pared() or n2.es_pared() or diag.es_pared()):
+                self.vecinos.append(diag)
+
+        # Abajo-izquierda
+        if (self.fila < filas-1 and self.col > 0):
+            n1 = grid[self.fila+1][self.col]
+            n2 = grid[self.fila][self.col-1]
+            diag = grid[self.fila+1][self.col-1]
+            if not (n1.es_pared() or n2.es_pared() or diag.es_pared()):
+                self.vecinos.append(diag)
+
+        # Arriba-derecha
+        if (self.fila > 0 and self.col < filas-1):
+            n1 = grid[self.fila-1][self.col]
+            n2 = grid[self.fila][self.col+1]
+            diag = grid[self.fila-1][self.col+1]
+            if not (n1.es_pared() or n2.es_pared() or diag.es_pared()):
+                self.vecinos.append(diag)
+
+        # Arriba-izquierda
+        if (self.fila > 0 and self.col > 0):
+            n1 = grid[self.fila-1][self.col]
+            n2 = grid[self.fila][self.col-1]
+            diag = grid[self.fila-1][self.col-1]
+            if not (n1.es_pared() or n2.es_pared() or diag.es_pared()):
+                self.vecinos.append(diag)
+
+    #def __lt__(self, otro): return False
 
 def heuristica(p1, p2):
-    x1,y1 = p1; x2,y2 = p2
-    return abs(x1-x2) + abs(y1-y2)
+    #x1,y1 = p1; x2,y2 = p2
+    #return abs(x1-x2) + abs(y1-y2)
+    dx = abs(p1[0] - p2[0])
+    dy = abs(p1[1] - p2[1])
+    # D2 = coste diagonal (14), D = coste ortogonal (10)
+    return 14 * min(dx, dy) + 10 * (max(dx, dy) - min(dx, dy))
 
 def reconstruir_camino(came_from, actual, dibujar):
     longitud = 0
@@ -82,7 +122,8 @@ def algoritmo_a_estrella(dibujar, grid, inicio, fin):
     # --- Preparar estructuras ---
     contador = 0
     open_set = PriorityQueue()
-    open_set.put((0, contador, inicio))
+    # inicio.g ya es 0 e inicio.f ya está calculado antes de esto
+    open_set.put((inicio.f, -inicio.g, contador, inicio))
     open_set_hash = {inicio}
     # nodos ya evaluados
     closed_set = set()
@@ -102,8 +143,10 @@ def algoritmo_a_estrella(dibujar, grid, inicio, fin):
         print("Lista Abierta:", ", ".join(abierta))
         print("Lista Cerrada:",  ", ".join(cerrada))
 
-        # ─── 2) Extraer nodo con menor f ───
-        actual = open_set.get()[2]
+        #actual = open_set.get()[2]
+        # ─── 2) Extraer nodo con menor f (desempate por mayor g) ───
+        _, _, _, actual = open_set.get()
+
         open_set_hash.remove(actual)
         closed_set.add(actual)          # marcamos actual como cerrado
 
@@ -136,7 +179,12 @@ def algoritmo_a_estrella(dibujar, grid, inicio, fin):
 
         # ─── 4) Procesar vecinos ───
         for vecino in actual.vecinos:
-            temp_g = actual.g + 1
+            # Detectar diagonal vs ortogonal
+            dr = abs(actual.fila - vecino.fila)
+            dc = abs(actual.col  - vecino.col)
+            coste = 14 if (dr == 1 and dc == 1) else 10
+
+            temp_g = actual.g + coste
             if temp_g < vecino.g:
                 came_from[vecino] = actual
                 vecino.g = temp_g
@@ -144,9 +192,12 @@ def algoritmo_a_estrella(dibujar, grid, inicio, fin):
                 vecino.f = vecino.g + vecino.h
                 if vecino not in open_set_hash:
                     contador += 1
-                    open_set.put((vecino.f, contador, vecino))
+                    # Insertamos un tuple de 4 elementos: (f, -g, orden, nodo)
+                    # De este modo, si dos nodos tienen igual f, gana el que tenga mayor g
+                    open_set.put((vecino.f, -vecino.g, contador, vecino))
                     open_set_hash.add(vecino)
                     vecino.hacer_abierto()
+
 
         dibujar(); time.sleep(ANIMATION_DELAY)
         nodos_visitados += 1
@@ -228,8 +279,41 @@ def cargar_mapa(grid, filas, ancho, nombre="mapa.txt"):
         return None, None
     
 
+def construir_spt(grid, inicio):
+    dist = { nodo: float("inf") for fila in grid for nodo in fila }
+    dist[inicio] = 0
+    parent = {}
+    pq = PriorityQueue()
+    contador = 0
+    # Metemos un triplete: (dist, orden, nodo)
+    pq.put((0, contador, inicio))
+
+    while not pq.empty():
+        d_u, _, u = pq.get()       # ignoramos el segundo valor
+        if d_u > dist[u]:
+            continue
+        # Asegúra de que actualizar_vecinos ya contempla
+        # orto+diag con coste 10/14 y corner‐cutting.
+        u.actualizar_vecinos(grid)
+
+        for v in u.vecinos:
+            # Calcular coste de u→v
+            dr = abs(u.fila - v.fila)
+            dc = abs(u.col  - v.col)
+            coste = 14 if (dr == 1 and dc == 1) else 10
+
+            nd = dist[u] + coste
+            if nd < dist[v]:
+                dist[v] = nd
+                parent[v] = u
+                contador += 1
+                # volvemos a empujar con el nuevo contador
+                pq.put((nd, contador, v))
+
+    return parent, dist
+
 def main(ventana, ancho):
-    FILAS = 20
+    FILAS = 21
 
     # Estado: "edit" = editar (colocar start/goal/obstáculos)
     #         "searching" = A* corriendo
@@ -267,13 +351,32 @@ def main(ventana, ancho):
                 # Lanzar A*
                 if event.key == pygame.K_SPACE and inicio and fin and estado == "edit":
                     estado = "searching"
+                    # Ahora actualizamos vecinos (ortogonales + diagonales)
+                    #for fila in grid:
+                    #    for nodo in fila:
+                    #        nodo.actualizar_vecinos(grid)
+                    # 1) Construir el Shortest-Path Tree sin ciclos
+                    parent, dist = construir_spt(grid, inicio)
+
+                    # 2) Reasignar vecinos siguiendo solo aristas del SPT
                     for fila in grid:
                         for nodo in fila:
-                            nodo.actualizar_vecinos(grid)
-                    res = algoritmo_a_estrella(
+                            vecinos_tree = []
+                            # padre → nodo
+                            if nodo in parent:
+                                vecinos_tree.append(parent[nodo])
+                            # nodo → hijos
+                            for hijo, p in parent.items():
+                                if p is nodo:
+                                    vecinos_tree.append(hijo)
+                            nodo.vecinos = vecinos_tree
+
+                    # 3) Lanzar A* sobre este árbol (único camino posible)
+                    algoritmo_a_estrella(
                         lambda: dibujar(ventana, grid, FILAS, ancho),
                         grid, inicio, fin
                     )
+                    
                     estado = "done"
 
                 # R = Reiniciar todo
@@ -363,7 +466,7 @@ if __name__=="__main__":
     pygame.init()
     info = pygame.display.Info()
     mw, mh = info.current_w, info.current_h
-    MARGEN = 100
+    MARGEN = 150
     ANCHO = min(mw,mh) - MARGEN
     ventana = pygame.display.set_mode((ANCHO,ANCHO))
     pygame.display.set_caption("A* Visualizador de rutas")
