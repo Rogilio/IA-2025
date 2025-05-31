@@ -313,7 +313,7 @@ def construir_spt(grid, inicio):
     return parent, dist
 
 def main(ventana, ancho):
-    FILAS = 21
+    FILAS = 11
 
     # Estado: "edit" = editar (colocar start/goal/obstáculos)
     #         "searching" = A* corriendo
