@@ -38,7 +38,7 @@ def load_image(path):
 def train_linear_regression(dataset_path):
     df = pd.read_csv(dataset_path)
     X = df[['desp', 'vel']].values
-    y = df['jump'].values
+    y = df[['jump', 'move_left', 'move_right']].values
     model = LinearRegression()
     model.fit(X, y)
     return model
@@ -46,7 +46,7 @@ def train_linear_regression(dataset_path):
 def train_decision_tree(dataset_path):
     df = pd.read_csv(dataset_path)
     X = df[['desp', 'vel']].values
-    y = df['jump'].values
+    y = df[['jump', 'move_left', 'move_right']].values
     model = DecisionTreeClassifier()
     model.fit(X, y)
     return model
@@ -54,10 +54,28 @@ def train_decision_tree(dataset_path):
 def train_mlp(dataset_path):
     df = pd.read_csv(dataset_path)
     X = df[['desp', 'vel']].values
-    y = df['jump'].values
+    y = df[['jump', 'move_left', 'move_right']].values
     model = MLPClassifier(hidden_layer_sizes=(10, 10), max_iter=500)
     model.fit(X, y)
     return model
+
+def sklearn_predict_linear(model, desp, vel):
+    # model.predict devuelve un array de forma (1, 3) con valores continuos
+    y_pred = model.predict([[desp, vel]])[0]  # e.g. [0.2, 0.8, -0.3]
+    # Redondeamos cada valor a 0 o 1 con umbral 0.5
+    jump_pred      = 1 if y_pred[0] >= 0.5 else 0
+    move_left_pred = 1 if y_pred[1] >= 0.5 else 0
+    move_right_pred= 1 if y_pred[2] >= 0.5 else 0
+    return jump_pred, move_left_pred, move_right_pred
+
+def sklearn_predict_tree(model, desp, vel):
+    y_pred = model.predict([[desp, vel]])[0]  # por ejemplo [1, 0, 0]
+    # Cada componente ya es 0 o 1
+    return int(y_pred[0]), int(y_pred[1]), int(y_pred[2])
+
+def sklearn_predict_mlp(model, desp, vel):
+    y_pred = model.predict([[desp, vel]])[0]  # e.g. [0,1,0]
+    return int(y_pred[0]), int(y_pred[1]), int(y_pred[2])
 
 def sklearn_predict(model, desp, vel):
     try:
@@ -81,6 +99,7 @@ def main():
     font_title = pygame.font.SysFont(None, 48)
     font_option = pygame.font.SysFont(None, 36)
     mode = None
+    dataset_path = "datos.csv"
     options = ["1. Normal", 
                "2. Regresión Lineal", 
                "3. Árbol de Decisión",
@@ -102,6 +121,8 @@ def main():
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_1:
                     mode = 'normal'
+                    if mode == 'normal' and os.path.exists(dataset_path):
+                        os.remove(dataset_path)
                 elif event.key == pygame.K_2:
                     mode = 'linear'
                 elif event.key == pygame.K_3:
@@ -115,8 +136,9 @@ def main():
     # INTENTAR CARGAR MODELOS SI NO ES MODO NORMAL
     # ---------------------------------------------------
     model = None
-    dataset_path = "datos.csv"
+    
     if mode in ('linear', 'tree', 'mlp'):
+        # Si no existe dataset, solo permitimos modo 'normal' o 'auto'
         if os.path.exists(dataset_path):
             if mode == 'linear':
                 model = train_linear_regression(dataset_path)
@@ -215,13 +237,22 @@ def main():
     bullet_speed = 0.0
     bullet_active = False
 
+    # ---------------------------------------------------
+    # Variables para la bala vertical (parte superior izquierda)
+    # ---------------------------------------------------
+    bullet2_rect    = bullet_img.get_rect(topleft=(50, 0))  # margen de 50px al eje X
+    bullet2_speed   = random.randint(200, 400)              # velocidad en px/s hacia abajo
+    bullet2_active  = True
+
+
     bg_x = 0.0
     score = 0
 
-    datosEntrenamiento = []
+    datosEntrenamiento = [] # <<<--- lista local para recolectar solo en modo 'normal'
 
     pause_text = font_large.render("¡Game Over! Presiona R para reiniciar", True, (255, 0, 0))
     PLAYER_SPEED = 200
+    just_jumped = False  # <— bandera que marca si el usuario acaba de pulsar Espacio
 
     # ---------------------------------------------------
     # BUCLE PRINCIPAL
@@ -241,21 +272,31 @@ def main():
             if player_rect.right > WIDTH:
                 player_rect.right = WIDTH
 
+        # ------------------------------------
+        # 1. GESTIÓN DE EVENTOS
+        # ------------------------------------
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
             if event.type == pygame.KEYDOWN:
+                # Salto manual (solo en modo 'normal' o 'auto' si se presiona Espacio)
                 if event.key == pygame.K_SPACE and player_rect.bottom >= HEIGHT and not paused:
-                    player_vel_y = -270.0
-                    if jump_sound:
-                        jump_sound.play()
+                    # En modo LIN/TREE/MLP/Auto, este Espacio no debe generar datos nuevos,
+                    # así que solo permitimos Espacio → salto presencial cuando mode == 'normal'
+                    if mode == 'normal':
+                        just_jumped = True
+                        player_vel_y = -270.0
+                        if jump_sound:
+                            jump_sound.play()
+                # Reiniciar con R si estamos en pausa            
                 if event.key == pygame.K_r and paused:
                     bullet_active = False
                     player_rect.midbottom = (50, HEIGHT)
                     player_vel_y = 0.0
                     paused = False
                     score = 0
-                    datosEntrenamiento.clear()
+                    datosEntrenamiento.clear()  # <-- Limpiamos solo la lista local
+                    # Si hemos regresado a un modo ML, reentrenamos con el CSV
                     if mode in ('linear', 'tree', 'mlp') and os.path.exists(dataset_path):
                         # reentrenar modelo
                         if mode == 'linear':
@@ -266,33 +307,55 @@ def main():
                             model = train_mlp(dataset_path)
                     mode_auto = (mode == 'auto')
 
-        # Lógica de juego
+        # ------------------------------------
+        # 2. LÓGICA DE JUEGO (solo si no está en pausa)
+        # ------------------------------------
         if not paused:
             bg_x = (bg_x - 100.0 * dt) % WIDTH
+
+            # DEFINIR PREDICCIONES POR DEFECTO
+            jump_pred, left_pred, right_pred = 0, 0, 0
 
             # IA o ML salto
             if bullet_active and (mode_auto or mode in ('linear', 'tree', 'mlp')):
                 despBala = player_rect.x - bullet_rect.x
                 velocidadBala = abs(bullet_speed)
-                estatusAire = 1 if player_rect.bottom < HEIGHT else 0
-                estatuSuelo = 1 if player_rect.bottom >= HEIGHT else 0
-                if mode_auto:
-                    decision = random.choice([True, False])
-                else:
-                    decision = sklearn_predict(model, despBala, velocidadBala)
-                if decision and player_rect.bottom >= HEIGHT:
-                    player_vel_y = -270.0
-                    if jump_sound:
-                        jump_sound.play()
+                #estatusAire = 1 if player_rect.bottom < HEIGHT else 0
+                #estatuSuelo = 1 if player_rect.bottom >= HEIGHT else 0
+                # 1) Predecimos los tres valores (jump_pred, left_pred, right_pred)
+                if mode == 'linear':
+                    jump_pred, left_pred, right_pred = sklearn_predict_linear(model, despBala, velocidadBala)
+                elif mode == 'tree':
+                    jump_pred, left_pred, right_pred = sklearn_predict_tree(model, despBala, velocidadBala)
+                elif mode == 'mlp':
+                    jump_pred, left_pred, right_pred = sklearn_predict_mlp(model, despBala, velocidadBala)
+                elif mode_auto and bullet_active:
+                    jump_pred = random.choice([0,1])
+                    left_pred = 0
+                    right_pred = 0
+                    
 
+
+            # 2) Aplicar movimiento horizontal según predicción (siempre y cuando no estemos en pausa ni en el aire)
+            if left_pred == 1 and player_rect.left > 0:
+                player_rect.x -= PLAYER_SPEED * dt
+            if right_pred == 1 and player_rect.right < WIDTH:
+                player_rect.x += PLAYER_SPEED * dt
+
+            # 3) Si predice salto y estamos en el suelo:
+            if jump_pred == 1 and player_rect.bottom >= HEIGHT:
+                player_vel_y = -270.0
+                if jump_sound:
+                    jump_sound.play()
+            # 2.2. Física vertical (gravedad + posición)
             player_vel_y += gravity * dt
             player_rect.y += player_vel_y * dt
             if player_rect.bottom >= HEIGHT:
                 player_rect.bottom = HEIGHT
                 player_vel_y = 0.0
-
+            # 2.3. Lógica de bala
             if not bullet_active:
-                bullet_speed = -random.randint(300, 800)
+                bullet_speed = -200#-random.randint(300, 800)
                 bullet_rect.midbottom = (WIDTH - 100, HEIGHT)
                 bullet_active = True
             else:
@@ -301,33 +364,76 @@ def main():
                     bullet_active = False
                     score += 1
 
-            if bullet_active:
-                despBala = player_rect.x - bullet_rect.x
-                velocidadBala = abs(bullet_speed)
-                estatusAire = 1 if player_rect.bottom < HEIGHT else 0
-                estatuSuelo = 1 if player_rect.bottom >= HEIGHT else 0
-                datosEntrenamiento.append({
-                    'desp': despBala,
-                    'vel': velocidadBala,
-                    'suelo': estatuSuelo
-                })
+            # 2.4. RECOLECCIÓN DE DATOS (solo modo 'normal')
+            #    Queremos grabar en cada frame: desp, vel y si el jugador SALTÓ (1) o NO (0).
+            if mode == 'normal':
+                # 1) Si la bala está activa, calculamos sus valores
+                if bullet_active:
+                    despBala = player_rect.x - bullet_rect.x
+                    velocidadBala = abs(bullet_speed)
+                else:
+                    # Si no hay bala, ponemos valores neutros o por fuera de rango
+                    # (esto ayuda a que el modelo aprenda que "no hay bala" => no saltar).
+                    despBala = 9999     # o algún número grande
+                    velocidadBala = 0
+                # 2) Jump = 1 si justo saltaste en este frame, 0 si no
+                jump_flag = 1 if just_jumped else 0
 
+                # 3) Detectar movimiento horizontal este frame
+                move_left_flag  = 1 if (keys[pygame.K_LEFT] or keys[pygame.K_a]) else 0
+                move_right_flag = 1 if (keys[pygame.K_RIGHT] or keys[pygame.K_d]) else 0
+
+                # 4) Añadir la fila al dataset
+                datosEntrenamiento.append({
+                    'desp':        despBala,
+                    'vel':         velocidadBala,
+                    'jump':        jump_flag,
+                    'move_left':   move_left_flag,   
+                    'move_right':  move_right_flag   
+                })
+                # Finalmente reiniciamos la bandera, para que solo se grabe una vez por pulsación:
+                just_jumped = False
+            # Colisión bala horizontal vs jugador
             if bullet_rect.colliderect(player_rect):
                 paused = True
                 if game_over_sound:
                     game_over_sound.play()
 
+             # — BULLET VERTICAL (parte superior izquierda) —
+            if bullet2_active:
+                # La bala baja
+                bullet2_rect.y += bullet2_speed * dt
+
+                # Si sale por abajo, la volvemos a colocar arriba y reasignamos velocidad
+                if bullet2_rect.top > HEIGHT:
+                    bullet2_speed = random.randint(200, 400)   # nueva velocidad aleatoria
+                    bullet2_rect.bottom = 0                   # aparece justo arriba de la pantalla
+
+                # Colisión bala vertical ↔ jugador
+                if bullet2_rect.colliderect(player_rect):
+                    paused = True
+                    if game_over_sound:
+                        game_over_sound.play()
+
+            #Animacion
             anim_timer += dt
             if anim_timer >= ANIM_INTERVAL:
                 anim_timer = 0.0
                 anim_index = (anim_index + 1) % len(frames_run)
 
-        # Dibujar
+        # ────────────────────────────────────────
+        #  DIBUJADO EN PANTALLA
+        # ────────────────────────────────────────
         screen.blit(bg, (bg_x - WIDTH, 0))
         screen.blit(bg, (bg_x, 0))
+
         ship_rect = ship_img.get_rect(midbottom=(WIDTH - 100, HEIGHT - 30))
         screen.blit(ship_img, ship_rect)
+        # Dibuja bala horizontal
+        screen.blit(bullet_img, bullet2_rect)
+        # Dibuja bala vertical
         screen.blit(bullet_img, bullet_rect)
+
         current_frame = frames_run[anim_index]
         screen.blit(current_frame, player_rect)
         score_text = font_small.render(f"Puntos: {score}", True, (255, 255, 0))
@@ -337,7 +443,7 @@ def main():
         pygame.display.flip()
 
     # Al cerrar, guardamos el dataset actual en "datos.csv"
-    if datosEntrenamiento:
+    if mode == 'normal' and datosEntrenamiento:
         df_new = pd.DataFrame(datosEntrenamiento)
         if os.path.exists(dataset_path):
             df_old = pd.read_csv(dataset_path)
