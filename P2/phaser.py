@@ -6,8 +6,10 @@ import time
 import pandas as pd
 from sklearn.linear_model import LinearRegression
 from sklearn.tree import DecisionTreeClassifier
+from sklearn.linear_model import LogisticRegression
 from sklearn.neural_network import MLPClassifier
 from sklearn.exceptions import NotFittedError
+from sklearn.multioutput import MultiOutputClassifier
 
 # ---------------------------------------------------
 # CONSTANTES PRINCIPALES
@@ -24,6 +26,48 @@ SCALE_FACTOR = 1  # Sin escalado adicional
 SPRITE_ROWS = 1
 SPRITE_COLS = 4
 
+def collect_game_data(player_rect, bullet_rect, bullet_active, bullet_speed,
+                     bullet2_rect, bullet2_active, bullet2_speed,
+                     keys, just_jumped, HEIGHT):
+    """Recolecta datos completos del estado del juego"""
+    
+    # Información bala horizontal
+    if bullet_active:
+        desp_horizontal = player_rect.centerx - bullet_rect.centerx
+        vel_horizontal = abs(bullet_speed)
+    else:
+        desp_horizontal = 9999  # Muy lejos
+        vel_horizontal = 0
+    
+    # Información bala vertical
+    if bullet2_active:
+        desp_vertical = player_rect.centery - bullet2_rect.centery
+        vel_vertical = bullet2_speed
+    else:
+        desp_vertical = 9999  # Muy lejos
+        vel_vertical = 0
+    
+    # Estado del jugador
+    player_y = player_rect.centery
+    on_ground = 1 if player_rect.bottom >= HEIGHT else 0
+    
+    # Acciones del jugador
+    jump_flag = 1 if just_jumped else 0
+    move_left_flag = 1 if (keys[pygame.K_LEFT] or keys[pygame.K_a]) else 0
+    move_right_flag = 1 if (keys[pygame.K_RIGHT] or keys[pygame.K_d]) else 0
+    
+    return {
+        'desp_horizontal': desp_horizontal,
+        'vel_horizontal': vel_horizontal,
+        'desp_vertical': desp_vertical,
+        'vel_vertical': vel_vertical,
+        'player_y': player_y,
+        'on_ground': on_ground,
+        'jump': jump_flag,
+        'move_left': move_left_flag,
+        'move_right': move_right_flag
+    }
+
 # ---------------------------------------------------
 # FUNCIÓN PARA CARGAR IMÁGENES
 # ---------------------------------------------------
@@ -37,52 +81,53 @@ def load_image(path):
 # ---------------------------------------------------
 def train_linear_regression(dataset_path):
     df = pd.read_csv(dataset_path)
-    X = df[['desp', 'vel']].values
+    # Características: incluye ambas balas
+    X = df[['desp_horizontal', 'vel_horizontal', 'desp_vertical', 'vel_vertical', 
+            'player_y', 'on_ground']].values
     y = df[['jump', 'move_left', 'move_right']].values
-    model = LinearRegression()
+    
+    # MultiOutputClassifier para manejar múltiples salidas binarias
+    model = MultiOutputClassifier(LogisticRegression(max_iter=1000))
     model.fit(X, y)
     return model
 
 def train_decision_tree(dataset_path):
     df = pd.read_csv(dataset_path)
-    X = df[['desp', 'vel']].values
+    X = df[['desp_horizontal', 'vel_horizontal', 'desp_vertical', 'vel_vertical',
+            'player_y', 'on_ground']].values
     y = df[['jump', 'move_left', 'move_right']].values
-    model = DecisionTreeClassifier()
+    
+    model = MultiOutputClassifier(DecisionTreeClassifier(
+        max_depth=10,
+        min_samples_split=5,
+        random_state=42
+    ))
     model.fit(X, y)
     return model
 
 def train_mlp(dataset_path):
     df = pd.read_csv(dataset_path)
-    X = df[['desp', 'vel']].values
+    X = df[['desp_horizontal', 'vel_horizontal', 'desp_vertical', 'vel_vertical',
+            'player_y', 'on_ground']].values
     y = df[['jump', 'move_left', 'move_right']].values
-    model = MLPClassifier(hidden_layer_sizes=(10, 10), max_iter=500)
+    
+    model = MultiOutputClassifier(MLPClassifier(
+        hidden_layer_sizes=(20, 15, 10),
+        max_iter=1000,
+        random_state=42,
+        early_stopping=True
+    ))
     model.fit(X, y)
     return model
 
-def sklearn_predict_linear(model, desp, vel):
-    # model.predict devuelve un array de forma (1, 3) con valores continuos
-    y_pred = model.predict([[desp, vel]])[0]  # e.g. [0.2, 0.8, -0.3]
-    # Redondeamos cada valor a 0 o 1 con umbral 0.5
-    jump_pred      = 1 if y_pred[0] >= 0.5 else 0
-    move_left_pred = 1 if y_pred[1] >= 0.5 else 0
-    move_right_pred= 1 if y_pred[2] >= 0.5 else 0
-    return jump_pred, move_left_pred, move_right_pred
-
-def sklearn_predict_tree(model, desp, vel):
-    y_pred = model.predict([[desp, vel]])[0]  # por ejemplo [1, 0, 0]
-    # Cada componente ya es 0 o 1
-    return int(y_pred[0]), int(y_pred[1]), int(y_pred[2])
-
-def sklearn_predict_mlp(model, desp, vel):
-    y_pred = model.predict([[desp, vel]])[0]  # e.g. [0,1,0]
-    return int(y_pred[0]), int(y_pred[1]), int(y_pred[2])
-
-def sklearn_predict(model, desp, vel):
+def predict_actions(model, desp_h, vel_h, desp_v, vel_v, player_y, on_ground):
+    """Predicción unificada para todos los modelos"""
     try:
-        pred = model.predict([[desp, vel]])[0]
-        return bool(round(pred))
-    except NotFittedError:
-        return False
+        features = [[desp_h, vel_h, desp_v, vel_v, player_y, on_ground]]
+        predictions = model.predict(features)[0]
+        return int(predictions[0]), int(predictions[1]), int(predictions[2])
+    except (NotFittedError, Exception):
+        return 0, 0, 0
 
 # ---------------------------------------------------
 # CLASE PRINCIPAL DEL JUEGO
@@ -241,7 +286,7 @@ def main():
     # Variables para la bala vertical (parte superior izquierda)
     # ---------------------------------------------------
     bullet2_rect    = bullet_img.get_rect(topleft=(50, 0))  # margen de 50px al eje X
-    bullet2_speed   = random.randint(200, 400)              # velocidad en px/s hacia abajo
+    bullet2_speed   = 200#random.randint(200, 400)              # velocidad en px/s hacia abajo
     bullet2_active  = True
 
 
@@ -399,7 +444,7 @@ def main():
                 if game_over_sound:
                     game_over_sound.play()
 
-             # — BULLET VERTICAL (parte superior izquierda) —
+            # — BULLET VERTICAL (parte superior izquierda) —
             if bullet2_active:
                 # La bala baja
                 bullet2_rect.y += bullet2_speed * dt
