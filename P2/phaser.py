@@ -5,14 +5,17 @@ import sys
 import time
 import pandas as pd
 import numpy as np
-
+from collections import Counter
 # SKLEARN
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.neural_network import MLPClassifier
 from sklearn.preprocessing import StandardScaler
 from sklearn.exceptions import NotFittedError
-
+from sklearn.model_selection import GridSearchCV
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report
+from imblearn.over_sampling import SMOTE
 # ---------------------------------------------------
 # CONSTANTES PRINCIPALES
 # ---------------------------------------------------
@@ -79,77 +82,152 @@ def cargar_datos_csv(dataset_path):
     return False
 
 def red_neuronal():
-    """Entrena una Red Neuronal con los datos"""
+    """Entrena una Red Neuronal con oversampling y parámetros "tuneados"""  
     global datos_modelo, modelo_nn, scaler_nn
-    if len(datos_modelo) < 20:  # Mínimo más alto
-        print("No hay datos suficientes para entrenar la red neuronal.")
+    if len(datos_modelo) < 50:
+        print("No hay datos suficientes para entrenar la Red Neuronal.")
         return False
 
+    # 1. Convertir a array y separar X, y
     arr = np.array(datos_modelo, dtype=float)
-    X = arr[:, :-1]           # Todas las características excepto la última
-    y = arr[:, -1].astype(int) # Última columna es la acción
+    # Características: vel_bala, dist_h, dist_v
+    X = arr[:, :-1]
+    # Etiqueta: acción (0,1,2,3)
+    y = arr[:, -1].astype(int)
 
-    # Normalización crucial para redes neuronales
+    # 2. Oversampling de la clase "1 (saltar)" con SMOTE
+    sm = SMOTE(sampling_strategy={1: 150}, random_state=42)
+    X_res, y_res = sm.fit_resample(X, y)
+
+    # 3. Escalar características con StandardScaler
     scaler_nn = StandardScaler()
-    X_norm = scaler_nn.fit_transform(X)
+    X_norm = scaler_nn.fit_transform(X_res)
 
+    # 4. Definir Red Neuronal con parámetros ajustados
     modelo = MLPClassifier(
-        hidden_layer_sizes=(100, 50, 25),  # Arquitectura más profunda para más características
-        max_iter=8000,  # Más iteraciones para mejor convergencia
-        random_state=42, 
-        activation='relu',
-        solver='adam',
-        learning_rate_init=0.001,
-        alpha=0.0001  # Regularización para evitar overfitting
+        hidden_layer_sizes=(80, 40, 10),  # arquitectura profunda pero no excesiva
+        activation='relu',               # ReLU para datos normalizados
+        solver='adam',                   # Adam para convergencia adaptativa
+        learning_rate_init=1e-3,         # tasa de aprendizaje más baja para no sacrificar la clase minoritaria
+        alpha=1e-5,                      # Regularización L2 reducida
+        batch_size=32,                   # Lotes pequeños para ver ejemplos de salto con más frecuencia
+        max_iter=10000,                  # Más iteraciones porque ahora hay más datos tras SMOTE
+        tol=1e-5,                        # Menor tolerancia para no parar prematuramente
+        early_stopping=True,             # Parada temprana si no mejora en validación
+        validation_fraction=0.2,         # 10% de validación interna
+        n_iter_no_change=10,             # detener tras 15 épocas sin mejora
+        random_state=42
     )
-    print("Entrenando Red Neuronal…")
-    modelo.fit(X_norm, y)
+    print("Entrenando Red Neuronal tuneada…")
+    modelo.fit(X_norm, y_res)
     modelo_nn = modelo
-    print("Red Neuronal entrenada con éxito.")
+    print("Red Neuronal tuneada entrenada con éxito.")
     return True
 
 def generar_arbol_decision():
     """Entrena un Árbol de Decisión"""
     global datos_modelo, modelo_arbol
-    if len(datos_modelo) < 20:
+    if len(datos_modelo) < 50:
         print("No hay datos suficientes para entrenar el Árbol de Decisión.")
         return False
 
     arr = np.array(datos_modelo, dtype=float)
-    X = arr[:, :-1]           # Todas las características excepto la última
-    y = arr[:, -1].astype(int) # Última columna es la acción
+    X = arr[:, :3]           # Todas las características excepto la última
+    y = arr[:, 3].astype(int) # Última columna es la acción
 
-    modelo = DecisionTreeClassifier(
-        max_depth=10,  # Más profundo para manejar más características
-        min_samples_split=4,
-        min_samples_leaf=2,
-        random_state=42,
-        class_weight='balanced'  # Balancear clases para mejor aprendizaje de saltos
+    # 1. Oversampling de la clase "1" (SMOTE) para entrenar
+    sm = SMOTE(sampling_strategy={1: 200}, random_state=42)
+    X_res, y_res = sm.fit_resample(X, y)
+
+    # 2. Definir Grid de hiperparámetros
+    param_grid = {
+        'criterion': ['gini', 'entropy'],
+        'max_depth': [5, 7, 9],
+        'min_samples_split': [5, 10, 20],
+        'min_samples_leaf': [2, 4, 6],
+        'class_weight': ['balanced']
+    }
+    dt = DecisionTreeClassifier(random_state=42)
+    grid_dt = GridSearchCV(
+        dt, param_grid, cv=4, scoring='f1_macro', n_jobs=-5
     )
-    modelo.fit(X, y)
+    print("Buscando mejores parámetros para el Árbol de Decisión…")
+    grid_dt.fit(X_res, y_res)
+    best_params = grid_dt.best_params_
+    print("Mejores parámetros Árbol:", best_params)
+
+    # 3. Entrenar árbol con parámetros óptimos
+    modelo = DecisionTreeClassifier(
+        criterion=best_params['criterion'],
+        max_depth=best_params['max_depth'],
+        min_samples_split=best_params['min_samples_split'],
+        min_samples_leaf=best_params['min_samples_leaf'],
+        class_weight='balanced',
+        random_state=42
+    )
+    print("Entrenando Árbol de Decisión con parámetros óptimos…")
+    modelo.fit(X_res, y_res)
     modelo_arbol = modelo
     print("Árbol de Decisión entrenado con éxito.")
+
+    
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    clf = DecisionTreeClassifier(
+        criterion='entropy', max_depth=5, min_samples_split=10, min_samples_leaf=4, class_weight='balanced', random_state=42
+    )
+    clf.fit(X_train, y_train)
+    y_pred = clf.predict(X_test)
+    print(classification_report(y_test, y_pred, labels=[0,1,2,3]))
+
     return True
 
 def generar_knn():
-    """Entrena un modelo KNN"""
-    global datos_modelo, modelo_knn
-    if len(datos_modelo) < 20:
+    """Entrena un modelo KNN normalizando antes y ajustando vecinos"""
+    global datos_modelo, modelo_knn, scaler_knn
+    if len(datos_modelo) < 88:
         print("No hay datos suficientes para entrenar el KNN.")
         return False
 
     arr = np.array(datos_modelo, dtype=float)
-    X = arr[:, :-1]           # Todas las características excepto la última
-    y = arr[:, -1].astype(int) # Última columna es la acción
+    X = arr[:, :3]           # [vel, dist_h, dist_v]
+    y = arr[:, 3].astype(int)
 
-    modelo = KNeighborsClassifier(
-        n_neighbors=7,  # Más vecinos para mayor estabilidad
-        weights='distance'  # Dar más peso a vecinos cercanos
+    # 1. Oversampling de la clase "1" con SMOTE
+    sm = SMOTE(sampling_strategy={1: 150}, random_state=42)
+    X_res, y_res = sm.fit_resample(X, y)
+
+    # 2. Escalar todas las características
+    scaler_knn = StandardScaler()
+    X_norm = scaler_knn.fit_transform(X_res)
+
+    # 3. GridSearchCV para hallar mejor combinación de k, pesos y p
+    param_grid_knn = {
+        'n_neighbors': [3, 5, 7, 9],
+        'weights': ['uniform', 'distance'],
+        'p': [1, 2]  # Manhattan o Euclídea
+    }
+    knn_base = KNeighborsClassifier()
+    grid_knn = GridSearchCV(
+        knn_base, param_grid_knn, cv=3, scoring='f1_macro', n_jobs=-1
     )
-    modelo.fit(X, y)
+    print("Buscando mejores parámetros para KNN…")
+    grid_knn.fit(X_norm, y_res)
+    best_knn = grid_knn.best_params_
+    print("Mejores parámetros KNN:", best_knn)
+
+    # 4. Entrenar KNN con la mejor configuración
+    modelo = KNeighborsClassifier(
+        n_neighbors=best_knn['n_neighbors'],
+        weights=best_knn['weights'],
+        metric='minkowski',
+        p=best_knn['p']
+    )
+    print("Entrenando KNN con parámetros óptimos…")
+    modelo.fit(X_norm, y_res)
     modelo_knn = modelo
-    print("-- KNN entrenado con éxito.")
+    print("KNN entrenado con éxito.")
     return True
+
 
 # ---------------------------------------------------
 # FUNCIÓN DE LÓGICA AUTOMÁTICA MEJORADA
@@ -175,35 +253,21 @@ def logica_auto(accion, player_rect, PLAYER_SPEED, WIDTH, HEIGHT, player_vel_y, 
 # ---------------------------------------------------
 def collect_game_data(player_rect, bullet_rect, bullet_active, bullet_speed,
                       bullet2_rect, bullet2_active, bullet2_speed,
-                      keys, just_jumped, player_vel_y):
-    """Recolecta datos del juego con características más detalladas para mejor aprendizaje"""
+                      keys, just_jumped):
+    """Recolecta datos del juego de forma más precisa"""
     
-    # Características mejoradas para mejor predicción de saltos
+    # Características mejoradas
     if bullet_active:
         dist_h = bullet_rect.centerx - player_rect.centerx  # Distancia horizontal (con signo)
         vel_bala = abs(bullet_speed)
-        # Tiempo estimado hasta colisión horizontal
-        tiempo_colision_h = abs(dist_h / bullet_speed) if bullet_speed != 0 else 999
     else:
         dist_h = 999
         vel_bala = 0
-        tiempo_colision_h = 999
 
     if bullet2_active:
         dist_v = bullet2_rect.centery - player_rect.centery  # Distancia vertical (con signo)
-        # Tiempo estimado hasta colisión vertical
-        tiempo_colision_v = abs(dist_v / bullet2_speed) if bullet2_speed != 0 else 999
     else:
         dist_v = 999
-        tiempo_colision_v = 999
-
-    # Nuevas características importantes para saltos
-    player_on_ground = 1 if player_rect.bottom >= HEIGHT else 0
-    player_y_velocity = player_vel_y
-    
-    # Peligro inmediato (balas muy cerca)
-    peligro_horizontal = 1 if (bullet_active and abs(dist_h) < 100 and dist_h > 0) else 0
-    peligro_vertical = 1 if (bullet2_active and abs(dist_v) < 100 and dist_v > 0) else 0
 
     # Acción basada en input del jugador
     if just_jumped:
@@ -215,49 +279,41 @@ def collect_game_data(player_rect, bullet_rect, bullet_active, bullet_speed,
     else:
         accion = 0
 
-    # Retornar más características para mejor aprendizaje
-    return [vel_bala, abs(dist_h), abs(dist_v), tiempo_colision_h, tiempo_colision_v, 
-            player_on_ground, peligro_horizontal, peligro_vertical, accion]
+    return [vel_bala, abs(dist_h), abs(dist_v), accion]
 
 # ---------------------------------------------------
 # PREDICCIÓN MEJORADA CON MÁS CARACTERÍSTICAS
 # ---------------------------------------------------
 def sklearn_predict_improved(model, player_rect, bullet_rect, bullet_active, bullet_speed,
-                             bullet2_rect, bullet2_active, bullet2_speed, player_vel_y):
-    """Predicción mejorada con características más detalladas"""
+                             bullet2_rect, bullet2_active, bullet2_speed):
+    """Predicción mejorada con mejor manejo de características"""
     try:
         if bullet_active:
             dist_h = abs(bullet_rect.centerx - player_rect.centerx)
             vel_bala = abs(bullet_speed)
-            tiempo_colision_h = dist_h / vel_bala if vel_bala > 0 else 999
         else:
             dist_h = 999
             vel_bala = 0
-            tiempo_colision_h = 999
 
         if bullet2_active:
             dist_v = abs(bullet2_rect.centery - player_rect.centery)
-            tiempo_colision_v = dist_v / bullet2_speed if bullet2_speed > 0 else 999
         else:
             dist_v = 999
-            tiempo_colision_v = 999
 
-        # Nuevas características para mejor predicción
-        player_on_ground = 1 if player_rect.bottom >= HEIGHT else 0
-        peligro_horizontal = 1 if (bullet_active and dist_h < 100) else 0
-        peligro_vertical = 1 if (bullet2_active and dist_v < 100) else 0
-
-        features = np.array([[vel_bala, dist_h, dist_v, tiempo_colision_h, tiempo_colision_v,
-                             player_on_ground, peligro_horizontal, peligro_vertical]])
+        features = np.array([[vel_bala, dist_h, dist_v]], dtype=float)
         
-        # Aplicar normalización solo para redes neuronales
+        # Si es red neuronal, usar su scaler_nn
         if model == modelo_nn and scaler_nn is not None:
             features = scaler_nn.transform(features)
+        # Si es KNN, usar scaler_knn
+        elif model == modelo_knn and scaler_knn is not None:
+            features = scaler_knn.transform(features)
+        # Si es árbol, nada que escalar
         
         accion = model.predict(features)[0]
         return int(accion)
     except Exception as e:
-        print(f"-- Error en predicción: {e}")
+        print(f"[ERROR] Error en predicción: {e}")
         return 0
 
 # ---------------------------------------------------
@@ -288,7 +344,7 @@ def main():
         title_surf = font_title.render("Selecciona Modo de Juego:", True, (255, 255, 255))
         screen.blit(title_surf, (WIDTH//2 - title_surf.get_width()//2, 50))
 
-        opts = ["1. Normal (Modo Manual)", "2. Auto (Inteligencia Artificial)"]
+        opts = ["1. Normal", "2. Auto"]
         for i, txt in enumerate(opts):
             surf = font_option.render(txt, True, (200, 200, 200))
             screen.blit(surf, (WIDTH//2 - surf.get_width()//2, 150 + i*50))
@@ -435,7 +491,7 @@ def main():
     bullet_active = False
 
     # Bala vertical (siempre desde la esquina superior izquierda)
-    bullet2_rect = bullet_img.get_rect(topleft=(0, 0))
+    bullet2_rect = bullet_img.get_rect(topleft=(50, 0))
     bullet2_speed = 200
     bullet2_active = True
 
@@ -446,6 +502,10 @@ def main():
 
     pause_text = font_large.render("¡Game Over! Presiona R para reiniciar", True, (255, 0, 0))
     just_jumped = False
+
+    INITIAL_PLAYER_X = 50  # Define the initial X position
+    return_to_initial = False  # Flag to control return movement
+    return_speed = 300  # Speed for returning to initial position
 
     # ---------------------------------------------------
     # BUCLE PRINCIPAL
@@ -473,11 +533,12 @@ def main():
                     # Reiniciar estado
                     bullet_active = False
                     bullet2_active = True
-                    bullet2_rect.topleft = (0, 0)  # Reiniciar desde esquina superior izquierda
-                    player_rect.midbottom = (50, HEIGHT)
+                    bullet2_rect.topleft = (50, 0)  # Reiniciar desde esquina superior izquierda
+                    player_rect.midbottom = (INITIAL_PLAYER_X, HEIGHT)
                     player_vel_y = 0.0
                     paused = False
                     score = 0
+                    return_to_initial = False  # Reiniciar bandera de retorno
 
         # ------------------------------------
         # 2. LÓGICA DE JUEGO (solo si no está pausado)
@@ -488,10 +549,31 @@ def main():
 
             # Movimiento horizontal manual
             if mode == 'normal':
+                player_moved = False
+                
                 if keys[pygame.K_LEFT] or keys[pygame.K_a]:
                     player_rect.x -= PLAYER_SPEED * dt
-                if keys[pygame.K_RIGHT] or keys[pygame.K_d]:
+                    player_moved = True
+                    return_to_initial = True
+                elif keys[pygame.K_RIGHT] or keys[pygame.K_d]:
                     player_rect.x += PLAYER_SPEED * dt
+                    player_moved = True
+                    return_to_initial = True
+                
+                # Si no se está moviendo manualmente, regresar a posición inicial
+                if not player_moved and return_to_initial:
+                    if player_rect.centerx > INITIAL_PLAYER_X:
+                        # Mover hacia la izquierda
+                        player_rect.x -= return_speed * dt
+                        if player_rect.centerx <= INITIAL_PLAYER_X:
+                            player_rect.centerx = INITIAL_PLAYER_X
+                            return_to_initial = False
+                    elif player_rect.centerx < INITIAL_PLAYER_X:
+                        # Mover hacia la derecha
+                        player_rect.x += return_speed * dt
+                        if player_rect.centerx >= INITIAL_PLAYER_X:
+                            player_rect.centerx = INITIAL_PLAYER_X
+                            return_to_initial = False
                 # Límites de pantalla
                 if player_rect.left < 0:
                     player_rect.left = 0
@@ -504,7 +586,7 @@ def main():
                 data_point = collect_game_data(
                     player_rect, bullet_rect, bullet_active, bullet_speed,
                     bullet2_rect, bullet2_active, bullet2_speed,
-                    keys, just_jumped, player_vel_y
+                    keys, just_jumped
                 )
                 datosEntrenamiento.append(data_point)
                 last_collection_time = current_time
@@ -514,7 +596,7 @@ def main():
             if mode == 'auto' and model is not None:
                 accion = sklearn_predict_improved(
                     model, player_rect, bullet_rect, bullet_active, bullet_speed,
-                    bullet2_rect, bullet2_active, bullet2_speed, player_vel_y
+                    bullet2_rect, bullet2_active, bullet2_speed
                 )
                 player_vel_y = logica_auto(
                     accion, player_rect, PLAYER_SPEED, WIDTH, HEIGHT, 
@@ -543,8 +625,8 @@ def main():
             if bullet2_active:
                 bullet2_rect.y += bullet2_speed * dt
                 if bullet2_rect.top > HEIGHT:
-                    bullet2_speed = random.randint(150, 300)
-                    bullet2_rect.topleft = (0, 0)  # Siempre desde esquina superior izquierda
+                    bullet2_speed = 150 #random.randint(150, 300)
+                    bullet2_rect.topleft = (50, 0)  # Siempre desde esquina superior izquierda
 
             # Colisiones: si colisiona, pausamos
             if (bullet_active and bullet_rect.colliderect(player_rect)) or \
@@ -580,12 +662,12 @@ def main():
         score_text = font_small.render(f"Puntos: {score}", True, (255, 255, 0))
         screen.blit(score_text, (10, 10))
         
-        mode_text = font_small.render(f"Modo: {mode.upper()}", True, (255, 255, 255))
-        screen.blit(mode_text, (10, 40))
+        #mode_text = font_small.render(f"Modo: {mode.upper()}", True, (255, 255, 255))
+        #screen.blit(mode_text, (10, 40))
         
         if mode == 'auto' and ai_algo:
             algo_text = font_small.render(f"IA: {ai_algo.upper()}", True, (0, 255, 0))
-            screen.blit(algo_text, (10, 70))
+            screen.blit(algo_text, (10, 40))
 
         # Si está pausado, mostramos texto de reinicio
         if paused:
@@ -597,9 +679,7 @@ def main():
     # GUARDAR DATOS AL FINALIZAR
     # ---------------------------------------------------
     if mode == 'normal' and datosEntrenamiento:
-        columns = ['vel', 'dist_h', 'dist_v', 'tiempo_col_h', 'tiempo_col_v', 
-                  'en_suelo', 'peligro_h', 'peligro_v', 'accion']
-        df_new = pd.DataFrame(datosEntrenamiento, columns=columns)
+        df_new = pd.DataFrame(datosEntrenamiento, columns=['vel', 'dist_h', 'dist_v', 'accion'])
         
         # CAMBIO PRINCIPAL: Sobrescribir en lugar de concatenar
         df_new.to_csv(dataset_path, index=False)
