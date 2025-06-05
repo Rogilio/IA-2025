@@ -6,271 +6,206 @@ import time
 import pandas as pd
 import numpy as np
 from collections import Counter
-# SKLEARN
+
+# ML
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.neural_network import MLPClassifier
 from sklearn.preprocessing import StandardScaler
-from sklearn.exceptions import NotFittedError
 from sklearn.model_selection import GridSearchCV
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report
 from imblearn.over_sampling import SMOTE
-# ---------------------------------------------------
-# CONSTANTES PRINCIPALES
-# ---------------------------------------------------
-WIDTH, HEIGHT = 800, 400
-FPS = 60  # Aumentado para mejor control
 
-# SPRITESHEET DEL JUGADOR
+# ============================
+#  CONSTANTES DEL JUEGO
+# ============================
+WIDTH, HEIGHT = 800, 400
+FPS = 60
+
+# SPRITE DEL JUGADOR
 FRAME_WIDTH = 32
 FRAME_HEIGHT = 48
-SCALE_FACTOR = 1
 SPRITE_ROWS = 1
 SPRITE_COLS = 4
+SCALE_FACTOR = 1
 
-# ---------------------------------------------------
-# FUNCIONES AUXILIARES DE CARGA
-# ---------------------------------------------------
-def load_image(path):
+# ============================
+#  VARIABLES GLOBALES IA & DATOS
+# ============================
+ia_model_perceptron = None
+ia_model_tree = None
+ia_model_knn = None
+scaler_perceptron = None
+scaler_knn = None
+
+flag_perceptron = False
+flag_tree = False
+flag_knn = False
+
+game_records = []
+RECORD_INTERVAL = 0.05
+last_record_time = 0.0
+DATASET_FILE = "datos.csv"
+
+# ============================
+#  UTILIDADES DE CARGA DE IMÁGENES
+# ============================
+def load_img(path):
     if not os.path.isfile(path):
-        raise FileNotFoundError(f"No se encontró la imagen: {path}")
+        tmp = pygame.Surface((32, 32))
+        tmp.fill((255, 0, 255))
+        pygame.draw.line(tmp, (0, 0, 0), (0, 0), (32, 32))
+        pygame.draw.line(tmp, (0, 0, 0), (0, 32), (32, 0))
+        print(f" Imagen no encontrada: {path}, usando placeholder")
+        return tmp.convert_alpha()
     return pygame.image.load(path).convert_alpha()
 
-# ---------------------------------------------------
-# VARIABLES GLOBALES PARA MODELOS
-# ---------------------------------------------------
-modelo_nn = None
-modelo_arbol = None
-modelo_knn = None
-scaler_nn = None
-
-m_neuronal = False
-m_arbol = False
-m_knn = False
-
-datos_modelo = []    # Lista global para recolectar datos
-COLLECTION_INTERVAL = 0.05  # Reducido para mejor recolección
-last_collection_time = 0.0
-
-# ---------------------------------------------------
-# FUNCIONES DE ENTRENAMIENTO
-# ---------------------------------------------------
+# ============================
+#  LIMPIEZA DE MODELOS
+# ============================
 def limpiar_modelos():
-    """Reinicia todos los modelos y banderas"""
-    global modelo_nn, modelo_arbol, modelo_knn, m_neuronal, m_arbol, m_knn, scaler_nn
-    modelo_nn = None
-    modelo_arbol = None
-    modelo_knn = None
-    scaler_nn = None
-    m_neuronal = False
-    m_arbol = False
-    m_knn = False
+    global ia_model_perceptron, ia_model_tree, ia_model_knn, scaler_perceptron, scaler_knn
+    global flag_perceptron, flag_tree, flag_knn
+    ia_model_perceptron = ia_model_tree = ia_model_knn = None
+    scaler_perceptron = scaler_knn = None
+    flag_perceptron = flag_tree = flag_knn = False
 
-def cargar_datos_csv(dataset_path):
-    """Carga datos del CSV a la lista global datos_modelo"""
-    global datos_modelo
-    if os.path.exists(dataset_path):
+# ============================
+#  CARGA DE PARTIDAS PASADAS
+# ============================
+def cargar_registros_csv(ruta: str = DATASET_FILE) -> bool:
+    global game_records
+    if os.path.exists(ruta):
         try:
-            df = pd.read_csv(dataset_path)
-            datos_modelo = df.values.tolist()
-            print(f"Cargados {len(datos_modelo)} datos del CSV")
+            df = pd.read_csv(ruta)
+            game_records = df.values.tolist()
+            print(f" {len(game_records)} registros cargados desde '{ruta}'.")
             return True
         except Exception as e:
-            print(f"-- No se pudo cargar el CSV: {e}")
-            return False
+            print(f"Fallo leyendo CSV: {e}")
     return False
 
-def red_neuronal():
-    """Entrena una Red Neuronal con oversampling y parámetros "tuneados"""  
-    global datos_modelo, modelo_nn, scaler_nn
-    if len(datos_modelo) < 50:
-        print("No hay datos suficientes para entrenar la Red Neuronal.")
-        return False
-
-    # 1. Convertir a array y separar X, y
-    arr = np.array(datos_modelo, dtype=float)
-    # Características: vel_bala, dist_h, dist_v
-    X = arr[:, :-1]
-    # Etiqueta: acción (0,1,2,3)
-    y = arr[:, -1].astype(int)
-
-    # 2. Oversampling de la clase "1 (saltar)" con SMOTE
-    sm = SMOTE(sampling_strategy={1: 150}, random_state=42)
-    X_res, y_res = sm.fit_resample(X, y)
-
-    # 3. Escalar características con StandardScaler
-    scaler_nn = StandardScaler()
-    X_norm = scaler_nn.fit_transform(X_res)
-
-    # 4. Definir Red Neuronal con parámetros ajustados
-    modelo = MLPClassifier(
-        hidden_layer_sizes=(80, 40, 10),  # arquitectura profunda pero no excesiva
-        activation='relu',               # ReLU para datos normalizados
-        solver='adam',                   # Adam para convergencia adaptativa
-        learning_rate_init=1e-3,         # tasa de aprendizaje más baja para no sacrificar la clase minoritaria
-        alpha=1e-5,                      # Regularización L2 reducida
-        batch_size=32,                   # Lotes pequeños para ver ejemplos de salto con más frecuencia
-        max_iter=10000,                  # Más iteraciones porque ahora hay más datos tras SMOTE
-        tol=1e-5,                        # Menor tolerancia para no parar prematuramente
-        early_stopping=True,             # Parada temprana si no mejora en validación
-        validation_fraction=0.2,         # 10% de validación interna
-        n_iter_no_change=10,             # detener tras 15 épocas sin mejora
-        random_state=42
-    )
-    print("Entrenando Red Neuronal tuneada…")
-    modelo.fit(X_norm, y_res)
-    modelo_nn = modelo
-    print("Red Neuronal tuneada entrenada con éxito.")
-    return True
-
-def generar_arbol_decision():
-    """Entrena un Árbol de Decisión"""
-    global datos_modelo, modelo_arbol
-    if len(datos_modelo) < 50:
-        print("No hay datos suficientes para entrenar el Árbol de Decisión.")
-        return False
-
-    arr = np.array(datos_modelo, dtype=float)
-    X = arr[:, :3]           # Todas las características excepto la última
-    y = arr[:, 3].astype(int) # Última columna es la acción
-
-    # 1. Oversampling de la clase "1" (SMOTE) para entrenar
-    sm = SMOTE(sampling_strategy={1: 200}, random_state=42)
-    X_res, y_res = sm.fit_resample(X, y)
-
-    # 2. Definir Grid de hiperparámetros
-    param_grid = {
-        'criterion': ['gini', 'entropy'],
-        'max_depth': [5, 7, 9],
-        'min_samples_split': [5, 10, 20],
-        'min_samples_leaf': [2, 4, 6],
-        'class_weight': ['balanced']
-    }
-    dt = DecisionTreeClassifier(random_state=42)
-    grid_dt = GridSearchCV(
-        dt, param_grid, cv=4, scoring='f1_macro', n_jobs=-5
-    )
-    print("Buscando mejores parámetros para el Árbol de Decisión…")
-    grid_dt.fit(X_res, y_res)
-    best_params = grid_dt.best_params_
-    print("Mejores parámetros Árbol:", best_params)
-
-    # 3. Entrenar árbol con parámetros óptimos
-    modelo = DecisionTreeClassifier(
-        criterion=best_params['criterion'],
-        max_depth=best_params['max_depth'],
-        min_samples_split=best_params['min_samples_split'],
-        min_samples_leaf=best_params['min_samples_leaf'],
-        class_weight='balanced',
-        random_state=42
-    )
-    print("Entrenando Árbol de Decisión con parámetros óptimos…")
-    modelo.fit(X_res, y_res)
-    modelo_arbol = modelo
-    print("Árbol de Decisión entrenado con éxito.")
-
-    
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-    clf = DecisionTreeClassifier(
-        criterion='entropy', max_depth=5, min_samples_split=10, min_samples_leaf=4, class_weight='balanced', random_state=42
-    )
-    clf.fit(X_train, y_train)
-    y_pred = clf.predict(X_test)
-    print(classification_report(y_test, y_pred, labels=[0,1,2,3]))
-
-    return True
-
-def generar_knn():
-    """Entrena un modelo KNN normalizando antes y ajustando vecinos"""
-    global datos_modelo, modelo_knn, scaler_knn
-    if len(datos_modelo) < 88:
-        print("No hay datos suficientes para entrenar el KNN.")
-        return False
-
-    arr = np.array(datos_modelo, dtype=float)
-    X = arr[:, :3]           # [vel, dist_h, dist_v]
+# ============================
+#  ENTRENAMIENTO DE MODELOS
+# ============================
+def _get_xy(min_samples: int = 40):
+    if len(game_records) < min_samples:
+        raise ValueError(f"Al menos {min_samples} muestras requeridas, hay {len(game_records)}.")
+    arr = np.array(game_records, dtype=float)
+    X = arr[:, :3]
     y = arr[:, 3].astype(int)
+    return X, y
 
-    # 1. Oversampling de la clase "1" con SMOTE
-    sm = SMOTE(sampling_strategy={1: 150}, random_state=42)
-    X_res, y_res = sm.fit_resample(X, y)
+def entrenar_perceptron():
+    global ia_model_perceptron, scaler_perceptron, flag_perceptron
+    try:
+        X, y = _get_xy(40)
+        sm = SMOTE(sampling_strategy={1: 150}, random_state=42)
+        X_res, y_res = sm.fit_resample(X, y)
+        scaler_perceptron = StandardScaler()
+        X_norm = scaler_perceptron.fit_transform(X_res)
+        ia_model_perceptron = MLPClassifier(
+            hidden_layer_sizes=(50,),
+            max_iter=3000,
+            random_state=24,
+            activation='relu'
+        )
+        print("Entrenando perceptrón …")
+        ia_model_perceptron.fit(X_norm, y_res)
+        flag_perceptron = True
+        print("Perceptrón entrenado.")
+        return True
+    except Exception as e:
+        print(f"Fallo perceptrón: {e}")
+    return False
 
-    # 2. Escalar todas las características
-    scaler_knn = StandardScaler()
-    X_norm = scaler_knn.fit_transform(X_res)
+def entrenar_arbol():
+    global ia_model_tree, flag_tree
+    try:
+        X, y = _get_xy(40)
+        sm = SMOTE(sampling_strategy={1: 100}, random_state=45)
+        X_res, y_res = sm.fit_resample(X, y)
+        params = {
+            'criterion': ['gini', 'entropy'],
+            'max_depth': [4, 7],
+            'min_samples_split': [4, 8],
+            'min_samples_leaf': [2, 5]
+        }
+        grid = GridSearchCV(
+            DecisionTreeClassifier(random_state=45, class_weight='balanced'),
+            params,
+            cv=3,
+            scoring='f1_macro',
+            n_jobs=-1
+        )
+        print("Buscando hiperparámetros Árbol …")
+        grid.fit(X_res, y_res)
+        best = grid.best_params_
+        print("Árbol mejor config:", best)
+        ia_model_tree = DecisionTreeClassifier(
+            **best, class_weight='balanced', random_state=45)
+        ia_model_tree.fit(X_res, y_res)
+        flag_tree = True
+        print("Árbol entrenado.")
+        return True
+    except Exception as e:
+        print(f"Fallo árbol: {e}")
+    return False
 
-    # 3. GridSearchCV para hallar mejor combinación de k, pesos y p
-    param_grid_knn = {
-        'n_neighbors': [3, 5, 7, 9],
-        'weights': ['uniform', 'distance'],
-        'p': [1, 2]  # Manhattan o Euclídea
-    }
-    knn_base = KNeighborsClassifier()
-    grid_knn = GridSearchCV(
-        knn_base, param_grid_knn, cv=3, scoring='f1_macro', n_jobs=-1
-    )
-    print("Buscando mejores parámetros para KNN…")
-    grid_knn.fit(X_norm, y_res)
-    best_knn = grid_knn.best_params_
-    print("Mejores parámetros KNN:", best_knn)
+def entrenar_knn():
+    global ia_model_knn, scaler_knn, flag_knn
+    try:
+        X, y = _get_xy(55)
+        sm = SMOTE(sampling_strategy={1: 90}, random_state=25)
+        X_res, y_res = sm.fit_resample(X, y)
+        scaler_knn = StandardScaler()
+        X_norm = scaler_knn.fit_transform(X_res)
+        params = {
+            'n_neighbors': [3, 5, 7],
+            'weights': ['uniform', 'distance'],
+            'p': [1, 2],
+        }
+        grid = GridSearchCV(KNeighborsClassifier(), params, cv=3, scoring='f1_macro', n_jobs=-1)
+        print("Buscando hiperparámetros KNN …")
+        grid.fit(X_norm, y_res)
+        best = grid.best_params_
+        print("KNN mejor config:", best)
+        ia_model_knn = KNeighborsClassifier(**best, metric='minkowski')
+        ia_model_knn.fit(X_norm, y_res)
+        flag_knn = True
+        print("KNN entrenado.")
+        return True
+    except Exception as e:
+        print(f"Fallo KNN: {e}")
+    return False
 
-    # 4. Entrenar KNN con la mejor configuración
-    modelo = KNeighborsClassifier(
-        n_neighbors=best_knn['n_neighbors'],
-        weights=best_knn['weights'],
-        metric='minkowski',
-        p=best_knn['p']
-    )
-    print("Entrenando KNN con parámetros óptimos…")
-    modelo.fit(X_norm, y_res)
-    modelo_knn = modelo
-    print("KNN entrenado con éxito.")
-    return True
+# ============================
+#  INFERENCIA Y ACCIÓN IA
+# ============================
+def predecir_accion(modelo, rect_j, rect_b, act_b, vel_b,
+                    rect_b2, act_b2, vel_b2):
+    try:
+        dist_h = abs(rect_b.centerx - rect_j.centerx) if act_b else 999
+        velocidad = abs(vel_b) if act_b else 0
+        dist_v = abs(rect_b2.centery - rect_j.centery) if act_b2 else 999
+        X_pred = np.array([[velocidad, dist_h, dist_v]], dtype=float)
+        if modelo == ia_model_perceptron and scaler_perceptron is not None:
+            X_pred = scaler_perceptron.transform(X_pred)
+        elif modelo == ia_model_knn and scaler_knn is not None:
+            X_pred = scaler_knn.transform(X_pred)
+        return int(modelo.predict(X_pred)[0])
+    except Exception as e:
+        print(f"Error predicción: {e}")
+        return 0
 
-
-# ---------------------------------------------------
-# FUNCIÓN DE LÓGICA AUTOMÁTICA MEJORADA
-# ---------------------------------------------------
-def logica_auto(accion, player_rect, PLAYER_SPEED, WIDTH, HEIGHT, player_vel_y, gravity, jump_sound, dt):
-    """Aplica la acción predicha al jugador"""
-    if accion == 1 and player_rect.bottom >= HEIGHT:
-        # Saltar
-        player_vel_y = -350.0  # Salto más fuerte
-        if jump_sound:
-            jump_sound.play()
-    elif accion == 2 and player_rect.left > 0:
-        # Mover a la izquierda
-        player_rect.x -= PLAYER_SPEED * dt
-    elif accion == 3 and player_rect.right < WIDTH:
-        # Mover a la derecha
-        player_rect.x += PLAYER_SPEED * dt
-    
-    return player_vel_y
-
-# ---------------------------------------------------
-# RECOLECCIÓN DE DATOS MEJORADA CON MÁS CARACTERÍSTICAS
-# ---------------------------------------------------
-def collect_game_data(player_rect, bullet_rect, bullet_active, bullet_speed,
-                      bullet2_rect, bullet2_active, bullet2_speed,
-                      keys, just_jumped):
-    """Recolecta datos del juego de forma más precisa"""
-    
-    # Características mejoradas
-    if bullet_active:
-        dist_h = bullet_rect.centerx - player_rect.centerx  # Distancia horizontal (con signo)
-        vel_bala = abs(bullet_speed)
-    else:
-        dist_h = 999
-        vel_bala = 0
-
-    if bullet2_active:
-        dist_v = bullet2_rect.centery - player_rect.centery  # Distancia vertical (con signo)
-    else:
-        dist_v = 999
-
-    # Acción basada en input del jugador
-    if just_jumped:
+# ============================
+#  RECOLECCIÓN DE DATOS MANUAL
+# ============================
+def recolectar_estado(jugador, bala, activa_bala, vel_bala,
+                      bala2, activa_bala2, vel_bala2, keys, salto_now):
+    velocidad = abs(vel_bala) if activa_bala else 0
+    dist_h = abs(bala.centerx - jugador.centerx) if activa_bala else 999
+    dist_v = abs(bala2.centery - jugador.centery) if activa_bala2 else 999
+    if salto_now:
         accion = 1
     elif keys[pygame.K_LEFT] or keys[pygame.K_a]:
         accion = 2
@@ -278,134 +213,64 @@ def collect_game_data(player_rect, bullet_rect, bullet_active, bullet_speed,
         accion = 3
     else:
         accion = 0
+    return [velocidad, dist_h, dist_v, accion]
 
-    return [vel_bala, abs(dist_h), abs(dist_v), accion]
-
-# ---------------------------------------------------
-# PREDICCIÓN MEJORADA CON MÁS CARACTERÍSTICAS
-# ---------------------------------------------------
-def sklearn_predict_improved(model, player_rect, bullet_rect, bullet_active, bullet_speed,
-                             bullet2_rect, bullet2_active, bullet2_speed):
-    """Predicción mejorada con mejor manejo de características"""
-    try:
-        if bullet_active:
-            dist_h = abs(bullet_rect.centerx - player_rect.centerx)
-            vel_bala = abs(bullet_speed)
-        else:
-            dist_h = 999
-            vel_bala = 0
-
-        if bullet2_active:
-            dist_v = abs(bullet2_rect.centery - player_rect.centery)
-        else:
-            dist_v = 999
-
-        features = np.array([[vel_bala, dist_h, dist_v]], dtype=float)
-        
-        # Si es red neuronal, usar su scaler_nn
-        if model == modelo_nn and scaler_nn is not None:
-            features = scaler_nn.transform(features)
-        # Si es KNN, usar scaler_knn
-        elif model == modelo_knn and scaler_knn is not None:
-            features = scaler_knn.transform(features)
-        # Si es árbol, nada que escalar
-        
-        accion = model.predict(features)[0]
-        return int(accion)
-    except Exception as e:
-        print(f"[ERROR] Error en predicción: {e}")
-        return 0
-
-# ---------------------------------------------------
-# FUNCIÓN PRINCIPAL DEL JUEGO
-# ---------------------------------------------------
+# ============================
+#  LOOP PRINCIPAL DEL JUEGO
+# ============================
 def main():
-    global last_collection_time, datos_modelo
+    global last_record_time, game_records
 
     pygame.init()
     screen = pygame.display.set_mode((WIDTH, HEIGHT))
-    pygame.display.set_caption("Juego AI en Pygame con Modelos ML")
+    pygame.display.set_caption("Phaser Final – IA Adaptada")
     clock = pygame.time.Clock()
 
-    # ---------------------------------------------------
-    # MENÚ INICIAL: Selección de modo
-    # ---------------------------------------------------
+    # Fuentes y menú
     font_title = pygame.font.SysFont(None, 48)
-    font_option = pygame.font.SysFont(None, 36)
-    font_subtitle = pygame.font.SysFont(None, 28)
+    font_opt = pygame.font.SysFont(None, 36)
+    font_sub = pygame.font.SysFont(None, 28)
 
-    mode = None  # 'normal' o 'auto'
-    ai_algo = None  # 'tree', 'mlp' o 'knn'
-    dataset_path = "datos.csv"
+    mode = None
+    ia_algo = None
 
-    # Bucle para seleccionar Manual vs Auto
-    while mode is None:
-        screen.fill((20, 20, 20))
-        title_surf = font_title.render("Selecciona Modo de Juego:", True, (255, 255, 255))
-        screen.blit(title_surf, (WIDTH//2 - title_surf.get_width()//2, 50))
-
-        opts = ["1. Normal", "2. Auto"]
-        for i, txt in enumerate(opts):
-            surf = font_option.render(txt, True, (200, 200, 200))
-            screen.blit(surf, (WIDTH//2 - surf.get_width()//2, 150 + i*50))
-
+    def draw_menu(title, options):
+        screen.fill((30, 30, 40))
+        surf_t = font_title.render(title, True, (255, 255, 255))
+        screen.blit(surf_t, (WIDTH//2 - surf_t.get_width()//2, 50))
+        for i, line in enumerate(options):
+            surf = font_opt.render(line, True, (200, 240, 230))
+            screen.blit(surf, (WIDTH//2 - surf.get_width()//2, 140 + i*50))
         pygame.display.flip()
+
+    # Menú principal
+    while mode is None:
+        draw_menu("Elige el modo de juego:", ["1. Manual", "2. Automático"])
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT:
-                pygame.quit()
-                return
+                pygame.quit(); return
             if ev.type == pygame.KEYDOWN:
-                if ev.key == pygame.K_1:
-                    mode = 'normal'
-                elif ev.key == pygame.K_2:
-                    mode = 'auto'
+                if ev.key == pygame.K_1: mode = 'manual'
+                elif ev.key == pygame.K_2: mode = 'auto'
 
-    # Si elegimos Auto, pedimos el algoritmo
+    # Menú IA si corresponde
     if mode == 'auto':
-        # Cargar datos existentes del CSV
-        if not cargar_datos_csv(dataset_path):
-            # Si no hay datos, forzar modo manual
-            error = True
-            while error:
-                screen.fill((20,20,20))
-                msg1 = font_title.render("¡Error!", True, (255,0,0))
-                screen.blit(msg1, (WIDTH//2 - msg1.get_width()//2, 150))
-                msg2 = font_option.render("No se encontraron datos.", True, (255,255,255))
-                screen.blit(msg2, (WIDTH//2 - msg2.get_width()//2, 200))
-                msg3 = font_subtitle.render("Juega primero en modo Normal.", True, (150,150,150))
-                screen.blit(msg3, (WIDTH//2 - msg3.get_width()//2, 250))
-                pygame.display.flip()
-                for ev in pygame.event.get():
-                    if ev.type == pygame.QUIT:
-                        pygame.quit()
-                        return
-                    if ev.type == pygame.KEYDOWN:
-                        error = False
-                        mode = 'normal'
+        if not cargar_registros_csv():
+            draw_menu("¡No hay datos!", ["Primero juega en Manual."])
+            time.sleep(2)
+            mode = 'manual'
         else:
-            # Seleccionar algoritmo
-            while ai_algo is None:
-                screen.fill((20, 20, 20))
-                title_surf = font_title.render("Selecciona Algoritmo IA:", True, (255, 255, 255))
-                screen.blit(title_surf, (WIDTH//2 - title_surf.get_width()//2, 50))
-                opts = ["1. Árbol de Decisión", "2. Red Neuronal", "3. KNN"]
-                for i, txt in enumerate(opts):
-                    surf = font_option.render(txt, True, (200, 200, 200))
-                    screen.blit(surf, (WIDTH//2 - surf.get_width()//2, 150 + i*50))
-                subtitle = font_subtitle.render(f"Datos disponibles: {len(datos_modelo)}", True, (150,150,150))
-                screen.blit(subtitle, (WIDTH//2 - subtitle.get_width()//2, 110))
+            while ia_algo is None:
+                draw_menu("Elige IA:", ["1. Árbol de decisión", "2. Perceptrón", "3. KNN"])
+                sub = font_sub.render(f"Datos: {len(game_records)}", True, (150,210,180))
+                screen.blit(sub, (WIDTH//2 - sub.get_width()//2, 110))
                 pygame.display.flip()
                 for ev in pygame.event.get():
-                    if ev.type == pygame.QUIT:
-                        pygame.quit()
-                        return
+                    if ev.type == pygame.QUIT: pygame.quit(); return
                     if ev.type == pygame.KEYDOWN:
-                        if ev.key == pygame.K_1:
-                            ai_algo = 'tree'
-                        elif ev.key == pygame.K_2:
-                            ai_algo = 'mlp'
-                        elif ev.key == pygame.K_3:
-                            ai_algo = 'knn'
+                        if ev.key == pygame.K_1: ia_algo = 'tree'
+                        elif ev.key == pygame.K_2: ia_algo = 'mlp'
+                        elif ev.key == pygame.K_3: ia_algo = 'knn'
 
     # ---------------------------------------------------
     # ENTRENAMIENTO PREVIO
@@ -413,263 +278,178 @@ def main():
     model = None
     if mode == 'auto':
         limpiar_modelos()
-        if ai_algo == 'tree':
-            success = generar_arbol_decision()
-            if success:
-                model = modelo_arbol
-                m_arbol = True
-        elif ai_algo == 'mlp':
-            success = red_neuronal()
-            if success:
-                model = modelo_nn
-                m_neuronal = True
-        elif ai_algo == 'knn':
-            success = generar_knn()
-            if success:
-                model = modelo_knn
-                m_knn = True
-
-        if model is None:
-            print("-- No se pudo entrenar el modelo, cambiando a modo manual")
-            mode = 'normal'
+        ok = False
+        if ia_algo == 'tree': ok = entrenar_arbol(); model = ia_model_tree
+        if ia_algo == 'mlp':  ok = entrenar_perceptron(); model = ia_model_perceptron
+        if ia_algo == 'knn':  ok = entrenar_knn(); model = ia_model_knn
+        if not ok or model is None:
+            print("No se entrenó IA, cambiando a manual.")
+            mode = 'manual'
 
     # ---------------------------------------------------
     # CARGA DE RECURSOS
     # ---------------------------------------------------
-    try:
-        bg = load_image(os.path.join("assets", "game", "fondito2.png"))
-        bg = pygame.transform.scale(bg, (WIDTH, HEIGHT))
-        spritesheet = load_image(os.path.join("assets", "sprites", "altair2.png"))
-        bullet_img = load_image(os.path.join("assets", "sprites", "purple_ball.png"))
-        ship_img = load_image(os.path.join("assets", "game", "ufo.png"))
-    except FileNotFoundError as e:
-        print(e)
-        pygame.quit()
-        sys.exit()
+    bg = load_img(os.path.join('assets', 'game', 'fondito2.png'))
+    bg = pygame.transform.scale(bg, (WIDTH, HEIGHT))
+    spritesheet = load_img(os.path.join('assets', 'sprites', 'altair2.png'))
+    bullet_img = load_img(os.path.join('assets', 'sprites', 'purple_ball.png'))
+    ship_img = load_img(os.path.join('assets', 'game', 'ufo.png'))
 
     pygame.mixer.init()
     try:
-        jump_sound = pygame.mixer.Sound(os.path.join("assets", "audio", "jump.mp3"))
-        game_over_sound = pygame.mixer.Sound(os.path.join("assets", "audio", "game_over.wav"))
+        snd_jump = pygame.mixer.Sound(os.path.join('assets', 'audio', 'jump.mp3'))
+        snd_gameover = pygame.mixer.Sound(os.path.join('assets', 'audio', 'game_over.wav'))
     except pygame.error:
-        jump_sound = None
-        game_over_sound = None
-
-    font_large = pygame.font.SysFont(None, 48)
-    font_small = pygame.font.SysFont(None, 28)
+        snd_jump = snd_gameover = None
 
     # ---------------------------------------------------
     # PREPARAR ANIMACIÓN DEL JUGADOR
     # ---------------------------------------------------
-    frames_run = []
-    for row in range(SPRITE_ROWS):
-        for col in range(SPRITE_COLS):
-            x = col * FRAME_WIDTH
-            y = row * FRAME_HEIGHT
-            rect = pygame.Rect(x, y, FRAME_WIDTH, FRAME_HEIGHT)
+    frames = []
+    for r in range(SPRITE_ROWS):
+        for c in range(SPRITE_COLS):
+            rect = pygame.Rect(c*FRAME_WIDTH, r*FRAME_HEIGHT, FRAME_WIDTH, FRAME_HEIGHT)
             frame = spritesheet.subsurface(rect)
-            frame = pygame.transform.scale(frame, (int(FRAME_WIDTH * SCALE_FACTOR), int(FRAME_HEIGHT * SCALE_FACTOR)))
-            frames_run.append(frame)
-    anim_index = 0
-    anim_timer = 0.0
-    ANIM_INTERVAL = 1/7
+            frame = pygame.transform.scale(frame, (int(FRAME_WIDTH*SCALE_FACTOR), int(FRAME_HEIGHT*SCALE_FACTOR)))
+            frames.append(frame)
+    anim_idx, anim_timer, ANIM_INTERVAL = 0, 0.0, 1/8
 
     # ---------------------------------------------------
     # ESTADOS INICIALES DEL JUEGO
     # ---------------------------------------------------
-    running = True
-    paused = False
+    running, paused = True, False
+    player_rect = frames[0].get_rect(midbottom=(50, HEIGHT))
+    player_vel_y, gravity = 0.0, 900.0
+    PLAYER_SPEED = 275
 
-    player_rect = frames_run[0].get_rect(midbottom=(50, HEIGHT))
-    player_vel_y = 0.0
-    gravity = 1000.0
-    PLAYER_SPEED = 300
+    bullet_rect = bullet_img.get_rect(midbottom=(WIDTH-100, HEIGHT))
+    bullet_speed, bullet_active = -200.0, False
 
-    # Bala horizontal
-    bullet_rect = bullet_img.get_rect(midbottom=(WIDTH - 100, HEIGHT))
-    bullet_speed = -200.0  # Velocidad constante inicial
-    bullet_active = False
-
-    # Bala vertical (siempre desde la esquina superior izquierda)
     bullet2_rect = bullet_img.get_rect(topleft=(50, 0))
-    bullet2_speed = 200
-    bullet2_active = True
+    bullet2_speed, bullet2_active = 150, True
 
-    bg_x = 0.0
-    score = 0
+    bg_x, score = 0.0, 0
+    session_data, just_jumped = [], False
+    INIT_X, return_to_init, return_speed = 50, False, 250
 
-    datosEntrenamiento = []  # Para guardar en CSV al finalizar
-
-    pause_text = font_large.render("¡Game Over! Presiona R para reiniciar", True, (255, 0, 0))
-    just_jumped = False
-
-    INITIAL_PLAYER_X = 50  # Define the initial X position
-    return_to_initial = False  # Flag to control return movement
-    return_speed = 300  # Speed for returning to initial position
+    font_small = pygame.font.SysFont(None, 28)
+    pause_text = font_title.render("¡Game Over! Pulsa R", True, (255,0,0))
 
     # ---------------------------------------------------
     # BUCLE PRINCIPAL
     # ---------------------------------------------------
+
     while running:
-        dt = clock.tick(FPS) / 1000.0
+        dt = clock.tick(FPS)/1000.0
         keys = pygame.key.get_pressed()
 
-        # ------------------------------------
+         # ------------------------------------
         # 1. GESTIÓN DE EVENTOS
         # ------------------------------------
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
                 running = False
-            if event.type == pygame.KEYDOWN:
-                # Salto manual (solo en modo Normal)
-                if event.key == pygame.K_SPACE and player_rect.bottom >= HEIGHT and not paused:
-                    if mode == 'normal':
-                        just_jumped = True
-                        player_vel_y = -350.0
-                        if jump_sound:
-                            jump_sound.play()
-                # Reiniciar con R si estamos en pausa
-                if event.key == pygame.K_r and paused:
-                    # Reiniciar estado
+            if ev.type == pygame.KEYDOWN:
+                if ev.key == pygame.K_SPACE and player_rect.bottom >= HEIGHT and not paused and mode=='manual':
+                    just_jumped = True
+                    player_vel_y = -330.0
+                    if snd_jump: snd_jump.play()
+                if ev.key == pygame.K_r and paused:
                     bullet_active = False
-                    bullet2_active = True
-                    bullet2_rect.topleft = (50, 0)  # Reiniciar desde esquina superior izquierda
-                    player_rect.midbottom = (INITIAL_PLAYER_X, HEIGHT)
-                    player_vel_y = 0.0
-                    paused = False
-                    score = 0
-                    return_to_initial = False  # Reiniciar bandera de retorno
+                    bullet2_active, bullet2_rect.topleft = True, (50,0)
+                    player_rect.midbottom, player_vel_y = (INIT_X, HEIGHT), 0.0
+                    paused, score, return_to_init = False, 0, False
 
         # ------------------------------------
         # 2. LÓGICA DE JUEGO (solo si no está pausado)
         # ------------------------------------
+
         if not paused:
-            # Fondo en movimiento
-            bg_x = (bg_x - 100.0 * dt) % WIDTH
+            # Fondo scroll
+            bg_x = (bg_x - 100*dt) % WIDTH
 
-            # Movimiento horizontal manual
-            if mode == 'normal':
-                player_moved = False
-                
+            # Movimiento manual y regreso al centro
+            if mode=='manual':
+                moved = False
                 if keys[pygame.K_LEFT] or keys[pygame.K_a]:
-                    player_rect.x -= PLAYER_SPEED * dt
-                    player_moved = True
-                    return_to_initial = True
+                    player_rect.x -= PLAYER_SPEED*dt; moved=True; return_to_init=True
                 elif keys[pygame.K_RIGHT] or keys[pygame.K_d]:
-                    player_rect.x += PLAYER_SPEED * dt
-                    player_moved = True
-                    return_to_initial = True
-                
-                # Si no se está moviendo manualmente, regresar a posición inicial
-                if not player_moved and return_to_initial:
-                    if player_rect.centerx > INITIAL_PLAYER_X:
-                        # Mover hacia la izquierda
-                        player_rect.x -= return_speed * dt
-                        if player_rect.centerx <= INITIAL_PLAYER_X:
-                            player_rect.centerx = INITIAL_PLAYER_X
-                            return_to_initial = False
-                    elif player_rect.centerx < INITIAL_PLAYER_X:
-                        # Mover hacia la derecha
-                        player_rect.x += return_speed * dt
-                        if player_rect.centerx >= INITIAL_PLAYER_X:
-                            player_rect.centerx = INITIAL_PLAYER_X
-                            return_to_initial = False
-                # Límites de pantalla
-                if player_rect.left < 0:
-                    player_rect.left = 0
-                if player_rect.right > WIDTH:
-                    player_rect.right = WIDTH
+                    player_rect.x += PLAYER_SPEED*dt; moved=True; return_to_init=True
+                if not moved and return_to_init:
+                    if player_rect.centerx > INIT_X:
+                        player_rect.x -= return_speed*dt
+                        if player_rect.centerx <= INIT_X:
+                            player_rect.centerx = INIT_X; return_to_init=False
+                    elif player_rect.centerx < INIT_X:
+                        player_rect.x += return_speed*dt
+                        if player_rect.centerx >= INIT_X:
+                            player_rect.centerx = INIT_X; return_to_init=False
+                player_rect.clamp_ip(pygame.Rect(0,0,WIDTH,HEIGHT))
 
-            # Recolección de datos en modo manual
-            current_time = time.time()
-            if mode == 'normal' and (current_time - last_collection_time >= COLLECTION_INTERVAL):
-                data_point = collect_game_data(
+            # Recolección datos (solo manual)
+            now = time.time()
+            if mode=='manual' and now-last_record_time>=RECORD_INTERVAL:
+                session_data.append(recolectar_estado(
                     player_rect, bullet_rect, bullet_active, bullet_speed,
                     bullet2_rect, bullet2_active, bullet2_speed,
-                    keys, just_jumped
-                )
-                datosEntrenamiento.append(data_point)
-                last_collection_time = current_time
-                just_jumped = False
+                    keys, just_jumped))
+                last_record_time, just_jumped = now, False
 
-            # Lógica automática
-            if mode == 'auto' and model is not None:
-                accion = sklearn_predict_improved(
-                    model, player_rect, bullet_rect, bullet_active, bullet_speed,
-                    bullet2_rect, bullet2_active, bullet2_speed
-                )
-                player_vel_y = logica_auto(
-                    accion, player_rect, PLAYER_SPEED, WIDTH, HEIGHT, 
-                    player_vel_y, gravity, jump_sound, dt
-                )
+            # Control IA
+            if mode=='auto' and model is not None:
+                action = predecir_accion(model, player_rect, bullet_rect, bullet_active, bullet_speed,
+                                         bullet2_rect, bullet2_active, bullet2_speed)
+                # Acción: 0 = nada, 1 = salto, 2 = izq, 3 = der
+                if action == 1 and player_rect.bottom >= HEIGHT:
+                    player_vel_y = -330.0
+                    if snd_jump: snd_jump.play()
+                elif action == 2:
+                    player_rect.x = max(0, player_rect.x - PLAYER_SPEED * dt)
+                elif action == 3:
+                    player_rect.x = min(WIDTH - player_rect.width, player_rect.x + PLAYER_SPEED * dt)
 
-            # Física vertical (gravedad + posición)
-            player_vel_y += gravity * dt
-            player_rect.y += player_vel_y * dt
-            if player_rect.bottom >= HEIGHT:
-                player_rect.bottom = HEIGHT
-                player_vel_y = 0.0
+            # Física
+            player_vel_y += gravity*dt
+            player_rect.y += player_vel_y*dt
+            if player_rect.bottom >= HEIGHT: player_rect.bottom, player_vel_y = HEIGHT, 0.0
 
-            # Lógica de bala horizontal
+            # Bala horizontal
             if not bullet_active:
-                bullet_speed = random.randint(-250, -150)  # Velocidad variable
-                bullet_rect.midbottom = (WIDTH - 50, HEIGHT)
-                bullet_active = True
+                bullet_speed = random.randint(-250, -150)
+                bullet_rect.midbottom = (WIDTH-50, HEIGHT)
+                bullet_active=True
             else:
-                bullet_rect.x += bullet_speed * dt
+                bullet_rect.x += bullet_speed*dt
                 if bullet_rect.right < 0:
-                    bullet_active = False
-                    score += 1
+                    bullet_active=False; score+=1
 
-            # Lógica de bala vertical (siempre desde esquina superior izquierda)
+            # Bala vertical
             if bullet2_active:
-                bullet2_rect.y += bullet2_speed * dt
-                if bullet2_rect.top > HEIGHT:
-                    bullet2_speed = 150 #random.randint(150, 300)
-                    bullet2_rect.topleft = (50, 0)  # Siempre desde esquina superior izquierda
+                bullet2_rect.y += bullet2_speed*dt
+                if bullet2_rect.top>HEIGHT:
+                    bullet2_speed = 150
+                    bullet2_rect.topleft = (50,0)
 
-            # Colisiones: si colisiona, pausamos
+            # Colisiones
             if (bullet_active and bullet_rect.colliderect(player_rect)) or \
                (bullet2_active and bullet2_rect.colliderect(player_rect)):
-                paused = True
-                if game_over_sound:
-                    game_over_sound.play()
+                paused=True
+                if snd_gameover: snd_gameover.play()
 
-        # ------------------------------------
-        # 3. DIBUJADO EN PANTALLA
-        # ------------------------------------
-        screen.blit(bg, (bg_x - WIDTH, 0))
-        screen.blit(bg, (bg_x, 0))
+        # Dibujado
+        screen.blit(bg, (bg_x-WIDTH,0)); screen.blit(bg, (bg_x,0))
+        screen.blit(ship_img, ship_img.get_rect(midbottom=(WIDTH-100, HEIGHT-30)))
+        if bullet_active: screen.blit(bullet_img, bullet_rect)
+        if bullet2_active: screen.blit(bullet_img, bullet2_rect)
 
-        ship_rect = ship_img.get_rect(midbottom=(WIDTH - 100, HEIGHT - 30))
-        screen.blit(ship_img, ship_rect)
-
-        # Dibujar balas
-        if bullet_active:
-            screen.blit(bullet_img, bullet_rect)
-        if bullet2_active:
-            screen.blit(bullet_img, bullet2_rect)
-
-        # Animación del jugador
         anim_timer += dt
-        if anim_timer >= ANIM_INTERVAL:
-            anim_timer = 0.0
-            anim_index = (anim_index + 1) % len(frames_run)
-        current_frame = frames_run[anim_index]
-        screen.blit(current_frame, player_rect)
+        if anim_timer>=ANIM_INTERVAL:
+            anim_timer=0.0; anim_idx=(anim_idx+1)%len(frames)
+        screen.blit(frames[anim_idx], player_rect)
 
-        # Información en pantalla
-        score_text = font_small.render(f"Puntos: {score}", True, (255, 255, 0))
-        screen.blit(score_text, (10, 10))
-        
-        #mode_text = font_small.render(f"Modo: {mode.upper()}", True, (255, 255, 255))
-        #screen.blit(mode_text, (10, 40))
-        
-        if mode == 'auto' and ai_algo:
-            algo_text = font_small.render(f"IA: {ai_algo.upper()}", True, (0, 255, 0))
-            screen.blit(algo_text, (10, 40))
-
-        # Si está pausado, mostramos texto de reinicio
+        screen.blit(font_small.render(f"Puntos: {score}", True, (255,255,0)), (10,10))
+        if mode=='auto' and ia_algo:
+            screen.blit(font_small.render(f"IA: {ia_algo.upper()}", True, (0,255,0)), (10,40))
         if paused:
             screen.blit(pause_text, (WIDTH//2 - pause_text.get_width()//2, HEIGHT//2 - pause_text.get_height()//2))
 
@@ -678,19 +458,14 @@ def main():
     # ---------------------------------------------------
     # GUARDAR DATOS AL FINALIZAR
     # ---------------------------------------------------
-    if mode == 'normal' and datosEntrenamiento:
-        df_new = pd.DataFrame(datosEntrenamiento, columns=['vel', 'dist_h', 'dist_v', 'accion'])
-        
-        # CAMBIO PRINCIPAL: Sobrescribir en lugar de concatenar
-        df_new.to_csv(dataset_path, index=False)
-        print(f"Dataset creado/sobrescrito con {len(df_new)} registros")
-        
-        # Mostrar estadísticas de acciones para verificar balance
-        print(f"Distribución de acciones:")
-        print(f"  - No hacer nada (0): {len(df_new[df_new['accion'] == 0])}")
-        print(f"  - Saltar (1): {len(df_new[df_new['accion'] == 1])}")
-        print(f"  - Izquierda (2): {len(df_new[df_new['accion'] == 2])}")
-        print(f"  - Derecha (3): {len(df_new[df_new['accion'] == 3])}")
+
+    if mode=='manual' and session_data:
+        df = pd.DataFrame(session_data, columns=['vel_bala','dist_h','dist_v','accion'])
+        df.to_csv(DATASET_FILE, index=False)
+        print(f"Datos guardados: {len(df)} registros en {DATASET_FILE}")
+        print("Distribución de acciones:")
+        for a, cnt in Counter(df['accion']).items():
+            print(f"  Acción {a}: {cnt}")
 
     pygame.quit()
 
