@@ -4,6 +4,17 @@ Este documento describe el funcionamiento interno del código contenido en `pyga
 
 ---
 
+## Informacion
+
+**Alumno:** Rogelio Cristian Punzo Castro  
+**Materia:** Inteligencia Artificial  
+**No. Control:** 21120245
+**Docente:** Jesus Eduardo Alcaraz Chavez  
+**Institución:** Instituto Tecnologico de Morelia
+**Fecha:** Junio 2025
+
+---
+
 ## Estructura General
 
 El programa se divide en varias secciones claves:
